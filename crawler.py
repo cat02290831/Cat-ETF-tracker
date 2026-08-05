@@ -8,55 +8,47 @@ DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
+# 模擬完整瀏覽器 Header，防止被投信防爬蟲機制阻擋
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
 def fetch_00981a():
     """ 抓取 00981A 統一投信持股 """
     url = "https://www.ezmoney.com.tw/API/Fund/GetETFData"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Content-Type": "application/json"
-    }
     payload = {"FundCode": "00981A"}
-    
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        res.raise_for_status()
-        data = res.json()
-        
-        # 解析統一投信 JSON 結構
-        df = pd.DataFrame(data['Data']['Holdings'])
-        df = df[['StockCode', 'StockName', 'Ratio']]
-        df.columns = ['stock_code', 'stock_name', 'weight']
-        df['weight'] = df['weight'].astype(float)
-        return df
+        res = requests.post(url, json=payload, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            holdings = data.get('Data', {}).get('Holdings', [])
+            if holdings:
+                df = pd.DataFrame(holdings)[['StockCode', 'StockName', 'Ratio']]
+                df.columns = ['stock_code', 'stock_name', 'weight']
+                df['weight'] = df['weight'].astype(float)
+                return df
     except Exception as e:
-        print(f"[00981A] 統一投信抓取失敗: {e}")
-        return pd.DataFrame()
+        print(f"[00981A] 抓取失敗: {e}")
+    return pd.DataFrame()
 
 def fetch_00991a():
     """ 抓取 00991A 復華投信持股 """
     url = "https://www.fhtrust.com.tw/ETF/etf_detail/00991A"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status()
-        
-        # 使用 pandas 直接解析 HTML 表格
-        tables = pd.read_html(res.text)
-        # 取得包含持股的表格 (通常為第一或第二個表格)
-        for table in tables:
-            if '股票名稱' in str(table) or '權重' in str(table):
-                df = table.copy()
-                df = df.iloc[:, [0, 1, 2]] # 拿前三欄：代號、名稱、比例
-                df.columns = ['stock_code', 'stock_name', 'weight']
-                df['weight'] = df['weight'].astype(str).str.replace('%', '').astype(float)
-                return df
-        return pd.DataFrame()
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            tables = pd.read_html(res.text)
+            for table in tables:
+                if '股票名稱' in str(table) or '權重' in str(table):
+                    df = table.iloc[:, [0, 1, 2]].copy()
+                    df.columns = ['stock_code', 'stock_name', 'weight']
+                    df['weight'] = df['weight'].astype(str).str.replace('%', '').astype(float)
+                    return df
     except Exception as e:
-        print(f"[00991A] 復華投信抓取失敗: {e}")
-        return pd.DataFrame()
+        print(f"[00991A] 抓取失敗: {e}")
+    return pd.DataFrame()
 
 def build_webpage(results):
     html_content = f"""<!DOCTYPE html>
@@ -64,7 +56,7 @@ def build_webpage(results):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>00981A & 00991A 每日持股變動</title>
+    <title>00981A & 00991A 持股追蹤儀表板</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {{ background-color: #f4f6f9; padding: 25px; }}
@@ -78,41 +70,50 @@ def build_webpage(results):
         <div class="row">
     """
     
-    for fund_code, df in results.items():
-        html_content += f"""
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-                    <span>{fund_code} 官網即時持股</span>
-                    <span class="badge bg-primary">共 {len(df)} 檔</span>
-                </div>
-                <div class="card-body">
-                    <table class="table table-hover align-middle">
-                        <thead class="table-light">
-                            <tr>
-                                <th>代號</th>
-                                <th>股票名稱</th>
-                                <th>持股權重 (%)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-        """
-        for _, row in df.iterrows():
-            html_content += f"""
-                            <tr>
-                                <td><strong>{row['stock_code']}</strong></td>
-                                <td>{row['stock_name']}</td>
-                                <td class="text-primary fw-bold">{row['weight']}%</td>
-                            </tr>
-            """
+    if not results:
         html_content += """
-                        </tbody>
-                    </table>
-                </div>
+        <div class="col-12 text-center my-5">
+            <div class="alert alert-warning" role="alert">
+                今日投信官網尚未更新持股或連線維護中，請稍後重試。
             </div>
         </div>
         """
-        
+    else:
+        for fund_code, df in results.items():
+            html_content += f"""
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                        <span>{fund_code} 即時持股</span>
+                        <span class="badge bg-primary">共 {len(df)} 檔</span>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>代號</th>
+                                    <th>股票名稱</th>
+                                    <th>持股權重 (%)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            """
+            for _, row in df.iterrows():
+                html_content += f"""
+                                <tr>
+                                    <td><strong>{row['stock_code']}</strong></td>
+                                    <td>{row['stock_name']}</td>
+                                    <td class="text-primary fw-bold">{row['weight']}%</td>
+                                </tr>
+                """
+            html_content += """
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            """
+            
     html_content += """
         </div>
     </div>
@@ -120,6 +121,7 @@ def build_webpage(results):
 </html>
     """
     
+    # 強制產出 index.html
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
 
@@ -133,8 +135,7 @@ def main():
             results[code] = df_today
             df_today.to_csv(os.path.join(DATA_DIR, f"{code}_{TODAY}.csv"), index=False, encoding="utf-8-sig")
             
-    if results:
-        build_webpage(results)
+    build_webpage(results)
 
 if __name__ == "__main__":
     main()
